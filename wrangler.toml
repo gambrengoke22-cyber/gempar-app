@@ -1,0 +1,10 @@
+name = "gempar-app"
+compatibility_date = "2026-05-20"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gempar-db"
+database_id = "c3c7f291-b1d9-4806-9efb-d884c2e3199e"
+
+[build]
+command = ""
