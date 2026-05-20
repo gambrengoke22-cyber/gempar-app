@@ -1,0 +1,51 @@
+export async function onRequestGet(context) {
+  const { env, params } = context;
+  const id = params.id;
+  try {
+    const result = await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
+    if (!result) return jsonResponse({ success: false, error: "Anggota tidak ditemukan" }, 404);
+    return jsonResponse({ success: true, data: result });
+  } catch (err) {
+    return jsonResponse({ success: false, error: err.message }, 500);
+  }
+}
+
+export async function onRequestPut(context) {
+  const { env, params, request } = context;
+  const id = params.id;
+  try {
+    const body = await request.json();
+    const { nama, nik, rw, rt, gem_id, status, nik_valid, keterangan } = body;
+    const existing = await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
+    if (!existing) return jsonResponse({ success: false, error: "Anggota tidak ditemukan" }, 404);
+
+    let cleanNik = nik !== undefined ? (nik || "").replace(/\D/g, "") : existing.nik;
+    let validNik = nik_valid !== undefined ? parseInt(nik_valid) : existing.nik_valid;
+    if (nik !== undefined && cleanNik.length !== 16) validNik = 0;
+
+    const result = await env.DB.prepare(`UPDATE members SET nama = ?, nik = ?, rw = ?, rt = ?, gem_id = ?, status = ?, nik_valid = ?, keterangan = ?, updated_at = datetime('now') WHERE id = ? RETURNING *`)
+      .bind(nama || existing.nama, cleanNik || existing.nik, rw || existing.rw, rt !== undefined ? rt : existing.rt, gem_id || existing.gem_id, status || existing.status, validNik, keterangan !== undefined ? keterangan : existing.keterangan, id).first();
+
+    return jsonResponse({ success: true, data: result });
+  } catch (err) {
+    if (err.message?.includes("UNIQUE constraint failed")) return jsonResponse({ success: false, error: "GEM-ID atau NIK sudah terdaftar" }, 409);
+    return jsonResponse({ success: false, error: err.message }, 500);
+  }
+}
+
+export async function onRequestDelete(context) {
+  const { env, params } = context;
+  const id = params.id;
+  try {
+    const existing = await env.DB.prepare("SELECT * FROM members WHERE id = ?").bind(id).first();
+    if (!existing) return jsonResponse({ success: false, error: "Anggota tidak ditemukan" }, 404);
+    await env.DB.prepare("DELETE FROM members WHERE id = ?").bind(id).run();
+    return jsonResponse({ success: true, message: "Anggota berhasil dihapus", deleted: existing });
+  } catch (err) {
+    return jsonResponse({ success: false, error: err.message }, 500);
+  }
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+}
