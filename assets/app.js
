@@ -1,0 +1,462 @@
+// GEMPAR Frontend App
+// =====================
+
+const API_BASE = '';
+let currentPage = 1;
+let currentLimit = 20;
+let currentFilters = {};
+let statsData = null;
+
+// DOM Elements
+const els = {
+  tableBody: document.getElementById('tableBody'),
+  tableInfo: document.getElementById('tableInfo'),
+  pagination: document.getElementById('pagination'),
+  statsContainer: document.getElementById('statsContainer'),
+  searchInput: document.getElementById('searchInput'),
+  rwFilter: document.getElementById('rwFilter'),
+  statusFilter: document.getElementById('statusFilter'),
+  nikFilter: document.getElementById('nikFilter'),
+  modalForm: document.getElementById('modalForm'),
+  modalImport: document.getElementById('modalImport'),
+  memberForm: document.getElementById('memberForm'),
+  modalTitle: document.getElementById('modalTitle'),
+  toastContainer: document.getElementById('toastContainer'),
+  btnAdd: document.getElementById('btnAdd'),
+  btnInit: document.getElementById('btnInit'),
+  btnImport: document.getElementById('btnImport'),
+  btnExport: document.getElementById('btnExport'),
+  csvFile: document.getElementById('csvFile'),
+  csvText: document.getElementById('csvText'),
+};
+
+// ===================== INIT =====================
+document.addEventListener('DOMContentLoaded', () => {
+  loadStats();
+  loadMembers();
+  bindEvents();
+});
+
+function bindEvents() {
+  els.btnAdd.addEventListener('click', () => openModal());
+  els.btnInit.addEventListener('click', initDatabase);
+  els.btnImport.addEventListener('click', () => openImportModal());
+  els.btnExport.addEventListener('click', exportCSV);
+  els.memberForm.addEventListener('submit', handleFormSubmit);
+
+  // Filter debounce
+  let debounceTimer;
+  els.searchInput.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => { currentPage = 1; loadMembers(); }, 300);
+  });
+
+  els.rwFilter.addEventListener('change', () => { currentPage = 1; loadMembers(); });
+  els.statusFilter.addEventListener('change', () => { currentPage = 1; loadMembers(); });
+  els.nikFilter.addEventListener('change', () => { currentPage = 1; loadMembers(); });
+
+  // Close modal on backdrop click
+  els.modalForm.addEventListener('click', (e) => { if (e.target === els.modalForm) closeModal(); });
+  els.modalImport.addEventListener('click', (e) => { if (e.target === els.modalImport) closeImportModal(); });
+}
+
+// ===================== API HELPERS =====================
+async function api(endpoint, options = {}) {
+  try {
+    const url = `${API_BASE}${endpoint}`;
+    const res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...options,
+    });
+    const data = await res.json().catch(() => ({ success: false, error: 'Invalid JSON response' }));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    showToast(err.message, 'error');
+    throw err;
+  }
+}
+
+function buildQuery() {
+  const params = new URLSearchParams();
+  params.set('page', currentPage);
+  params.set('limit', currentLimit);
+  if (els.searchInput.value) params.set('search', els.searchInput.value);
+  if (els.rwFilter.value) params.set('rw', els.rwFilter.value);
+  if (els.statusFilter.value) params.set('status', els.statusFilter.value);
+  if (els.nikFilter.value !== '') params.set('nik_valid', els.nikFilter.value);
+  return params.toString();
+}
+
+// ===================== STATS =====================
+async function loadStats() {
+  try {
+    const data = await api('/api/stats');
+    statsData = data.stats;
+    renderStats();
+  } catch (err) {
+    console.error('Stats error:', err);
+  }
+}
+
+function renderStats() {
+  if (!statsData) return;
+
+  const total = statsData.total;
+  const validNik = statsData.nikValidity.find(x => x.nik_valid === 1)?.count || 0;
+  const invalidNik = statsData.nikValidity.find(x => x.nik_valid === 0)?.count || 0;
+  const active = statsData.perStatus.find(x => x.status === 'Aktif')?.count || 0;
+
+  els.statsContainer.innerHTML = `
+    <div class="stat-card">
+      <h4>Total Anggota</h4>
+      <div class="value">${total}</div>
+      <div class="sub">Jumantik Warakas</div>
+    </div>
+    <div class="stat-card">
+      <h4>NIK Valid</h4>
+      <div class="value" style="color: #059669">${validNik}</div>
+      <div class="sub">${total > 0 ? Math.round(validNik/total*100) : 0}% dari total</div>
+    </div>
+    <div class="stat-card">
+      <h4>NIK Invalid</h4>
+      <div class="value" style="color: #dc2626">${invalidNik}</div>
+      <div class="sub">Perlu perbaikan data</div>
+    </div>
+    <div class="stat-card">
+      <h4>Status Aktif</h4>
+      <div class="value" style="color: #3b82f6">${active}</div>
+      <div class="sub">${total > 0 ? Math.round(active/total*100) : 0}% aktif</div>
+    </div>
+  `;
+}
+
+// ===================== MEMBERS TABLE =====================
+async function loadMembers() {
+  try {
+    els.tableBody.innerHTML = '<tr><td colspan="8" class="text-center">Memuat data...</td></tr>';
+
+    const data = await api(`/api/members?${buildQuery()}`);
+    renderTable(data.data);
+    renderPagination(data.pagination);
+    els.tableInfo.textContent = `${data.pagination.total} anggota • Halaman ${data.pagination.page}/${data.pagination.totalPages}`;
+  } catch (err) {
+    els.tableBody.innerHTML = '<tr><td colspan="8" class="text-center">Gagal memuat data</td></tr>';
+  }
+}
+
+function renderTable(members) {
+  if (!members || members.length === 0) {
+    els.tableBody.innerHTML = `
+      <tr><td colspan="8">
+        <div class="empty-state">
+          <div class="icon">📭</div>
+          <p>Belum ada data anggota</p>
+          <button class="btn btn-primary" onclick="openModal()">Tambah Anggota</button>
+        </div>
+      </td></tr>`;
+    return;
+  }
+
+  const startIdx = (currentPage - 1) * currentLimit;
+
+  els.tableBody.innerHTML = members.map((m, i) => {
+    const nikDisplay = m.nik ? m.nik.replace(/(\d{4})(?=\d)/g, '$1-') : '-';
+    const nikBadge = m.nik_valid 
+      ? '<span class="badge badge-valid">✓ Valid</span>' 
+      : '<span class="badge badge-invalid">✗ Invalid</span>';
+    const statusBadge = m.status === 'Aktif' 
+      ? '<span class="badge badge-active">Aktif</span>' 
+      : '<span class="badge badge-inactive">Nonaktif</span>';
+
+    return `<tr>
+      <td>${startIdx + i + 1}</td>
+      <td><span class="gem-id">${m.gem_id}</span></td>
+      <td><strong>${escapeHtml(m.nama)}</strong>${m.keterangan ? `<br><small style="color:#9ca3af">${escapeHtml(m.keterangan)}</small>` : ''}</td>
+      <td>${nikDisplay}</td>
+      <td>RW ${m.rw}${m.rt ? '/RT ' + m.rt : ''}</td>
+      <td>${statusBadge}</td>
+      <td>${nikBadge}</td>
+      <td>
+        <div class="actions">
+          <button class="btn btn-sm btn-outline" onclick="editMember(${m.id})">✏️</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteMember(${m.id}, '${escapeHtml(m.nama)}')">🗑️</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPagination(pagination) {
+  if (!pagination || pagination.totalPages <= 1) {
+    els.pagination.innerHTML = '';
+    return;
+  }
+
+  const { page, totalPages } = pagination;
+  let html = '';
+
+  // Prev
+  html += `<button ${page <= 1 ? 'disabled' : ''} onclick="goToPage(${page - 1})">←</button>`;
+
+  // Page numbers
+  const maxVisible = 5;
+  let start = Math.max(1, page - Math.floor(maxVisible / 2));
+  let end = Math.min(totalPages, start + maxVisible - 1);
+  if (end - start < maxVisible - 1) start = Math.max(1, end - maxVisible + 1);
+
+  if (start > 1) html += `<button onclick="goToPage(1)">1</button>${start > 2 ? '<span>...</span>' : ''}`;
+
+  for (let i = start; i <= end; i++) {
+    html += `<button class="${i === page ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
+  }
+
+  if (end < totalPages) html += `${end < totalPages - 1 ? '<span>...</span>' : ''}<button onclick="goToPage(${totalPages})">${totalPages}</button>`;
+
+  // Next
+  html += `<button ${page >= totalPages ? 'disabled' : ''} onclick="goToPage(${page + 1})">→</button>`;
+
+  els.pagination.innerHTML = html;
+}
+
+function goToPage(page) {
+  currentPage = page;
+  loadMembers();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ===================== CRUD OPERATIONS =====================
+function openModal(member = null) {
+  els.modalForm.classList.add('active');
+  document.getElementById('memberId').value = member ? member.id : '';
+  document.getElementById('inpNama').value = member ? member.nama : '';
+  document.getElementById('inpNik').value = member ? member.nik || '' : '';
+  document.getElementById('inpRw').value = member ? member.rw : '';
+  document.getElementById('inpRt').value = member ? member.rt || '' : '';
+  document.getElementById('inpStatus').value = member ? member.status : 'Aktif';
+  document.getElementById('inpGemId').value = member ? member.gem_id : '';
+  document.getElementById('inpKeterangan').value = member ? member.keterangan || '' : '';
+
+  els.modalTitle.textContent = member ? 'Edit Anggota' : 'Tambah Anggota';
+  document.getElementById('inpGemId').readOnly = !member;
+  document.getElementById('inpGemId').style.background = member ? '#f3f4f6' : '';
+}
+
+function closeModal() {
+  els.modalForm.classList.remove('active');
+  els.memberForm.reset();
+}
+
+async function handleFormSubmit(e) {
+  e.preventDefault();
+
+  const id = document.getElementById('memberId').value;
+  const body = {
+    nama: document.getElementById('inpNama').value.trim(),
+    nik: document.getElementById('inpNik').value.trim(),
+    rw: document.getElementById('inpRw').value,
+    rt: document.getElementById('inpRt').value.trim(),
+    status: document.getElementById('inpStatus').value,
+    gem_id: document.getElementById('inpGemId').value.trim() || undefined,
+    keterangan: document.getElementById('inpKeterangan').value.trim(),
+  };
+
+  try {
+    if (id) {
+      await api(`/api/member/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+      showToast('Anggota berhasil diperbarui', 'success');
+    } else {
+      await api('/api/members', { method: 'POST', body: JSON.stringify(body) });
+      showToast('Anggota berhasil ditambahkan', 'success');
+    }
+    closeModal();
+    loadMembers();
+    loadStats();
+  } catch (err) {
+    // Error sudah ditangani di api()
+  }
+}
+
+async function editMember(id) {
+  try {
+    const data = await api(`/api/member/${id}`);
+    openModal(data.data);
+  } catch (err) {
+    console.error('Edit error:', err);
+  }
+}
+
+async function deleteMember(id, nama) {
+  if (!confirm(`Yakin hapus anggota "${nama}"?`)) return;
+
+  try {
+    await api(`/api/member/${id}`, { method: 'DELETE' });
+    showToast('Anggota berhasil dihapus', 'success');
+    loadMembers();
+    loadStats();
+  } catch (err) {
+    console.error('Delete error:', err);
+  }
+}
+
+// ===================== DATABASE INIT =====================
+async function initDatabase() {
+  if (!confirm('Inisialisasi database? Ini akan membuat tabel dan insert 5 data sample. Hanya jalankan sekali!')) return;
+
+  els.btnInit.disabled = true;
+  els.btnInit.textContent = '⏳ Memproses...';
+
+  try {
+    const data = await api('/api/init', { method: 'POST' });
+    showToast(data.message, 'success');
+    loadMembers();
+    loadStats();
+  } catch (err) {
+    console.error('Init error:', err);
+  } finally {
+    els.btnInit.disabled = false;
+    els.btnInit.textContent = '⚙️ Init DB';
+  }
+}
+
+// ===================== IMPORT CSV =====================
+function openImportModal() {
+  els.modalImport.classList.add('active');
+}
+
+function closeImportModal() {
+  els.modalImport.classList.remove('active');
+  els.csvFile.value = '';
+  els.csvText.value = '';
+}
+
+async function processImport() {
+  let csvContent = els.csvText.value.trim();
+
+  if (!csvContent && els.csvFile.files.length > 0) {
+    const file = els.csvFile.files[0];
+    csvContent = await file.text();
+  }
+
+  if (!csvContent) {
+    showToast('Masukkan data CSV atau pilih file', 'warning');
+    return;
+  }
+
+  const lines = csvContent.split('\n').filter(l => l.trim());
+  if (lines.length < 2) {
+    showToast('Format CSV tidak valid (minimal header + 1 baris data)', 'error');
+    return;
+  }
+
+  // Parse CSV sederhana
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const members = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.trim());
+    if (cols.length < 2) continue;
+
+    const get = (name) => {
+      const idx = headers.indexOf(name);
+      return idx >= 0 ? cols[idx] : '';
+    };
+
+    members.push({
+      nama: get('nama') || cols[0],
+      nik: get('nik') || cols[1] || '',
+      rw: get('rw') || cols[2] || '',
+      rt: get('rt') || cols[3] || '',
+      status: get('status') || cols[4] || 'Aktif',
+      keterangan: get('keterangan') || cols[5] || '',
+    });
+  }
+
+  if (members.length === 0) {
+    showToast('Tidak ada data valid untuk diimport', 'error');
+    return;
+  }
+
+  try {
+    const data = await api('/api/import', {
+      method: 'POST',
+      body: JSON.stringify({ members })
+    });
+    showToast(data.message, 'success');
+    closeImportModal();
+    loadMembers();
+    loadStats();
+
+    if (data.errors && data.errors.length > 0) {
+      console.warn('Import errors:', data.errors);
+      showToast(`${data.errors.length} data gagal diimport (cek console)`, 'warning');
+    }
+  } catch (err) {
+    console.error('Import error:', err);
+  }
+}
+
+// ===================== EXPORT CSV =====================
+async function exportCSV() {
+  try {
+    // Fetch all data (no pagination)
+    const data = await api('/api/members?limit=9999');
+    const members = data.data;
+
+    if (!members || members.length === 0) {
+      showToast('Tidak ada data untuk diekspor', 'warning');
+      return;
+    }
+
+    const headers = ['ID', 'GEM-ID', 'Nama', 'NIK', 'RW', 'RT', 'Status', 'NIK Valid', 'Keterangan', 'Created At'];
+    const rows = members.map(m => [
+      m.id, m.gem_id, m.nama, m.nik || '', m.rw, m.rt || '', m.status,
+      m.nik_valid ? 'Valid' : 'Invalid', m.keterangan || '', m.created_at
+    ]);
+
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))].join('\n');
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `GEMPAR_Members_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`${members.length} data berhasil diekspor`, 'success');
+  } catch (err) {
+    console.error('Export error:', err);
+  }
+}
+
+// ===================== UTILITIES =====================
+function showToast(message, type = 'success') {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `
+    <span>${escapeHtml(message)}</span>
+    <button style="background:none;border:none;cursor:pointer;margin-left:8px;font-size:16px;" onclick="this.parentElement.remove()">&times;</button>
+  `;
+  els.toastContainer.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Expose ke global untuk onclick inline
+window.openModal = openModal;
+window.closeModal = closeModal;
+window.editMember = editMember;
+window.deleteMember = deleteMember;
+window.goToPage = goToPage;
+window.openImportModal = openImportModal;
+window.closeImportModal = closeImportModal;
+window.processImport = processImport;
